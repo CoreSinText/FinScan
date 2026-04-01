@@ -1,12 +1,41 @@
-"""
-Service for interacting with AI/LLM (Google Generative AI).
-"""
+import json
+import logging
+import requests
+from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 class LLMService:
-    def __init__(self, api_key: str):
-        # TODO: Initialize the Gemini client using the api_key
-        pass
+    def __init__(self, model_name: str = "llama3"):
+        self.model_name = model_name
+        self.api_url = "http://localhost:11434/api/generate"
 
-    def extract_financial_data(self, text_content: str):
-        # TODO: Implement logic to formulate the prompt and get structured data from Gemini
-        pass
+    def extract_financial_data(self, text_content: str) -> Optional[Dict[str, Any]]:
+        prompt = f"""
+        Extract financial data from the following text to calculate PBV (Price to Book Value) and PE (Price to Earnings) ratios.
+        Please return the result strictly in JSON format with the following keys:
+        - "stock_price"
+        - "book_value_per_share"
+        - "earnings_per_share"
+        If a value is not found, set it to null. Do not include any other text except the JSON.
+
+        Text:
+        {text_content}
+        """
+
+        payload = {
+            "model": self.model_name,
+            "prompt": prompt,
+            "stream": False,
+            "format": "json"
+        }
+
+        try:
+            response = requests.post(self.api_url, json=payload, timeout=120)
+            response.raise_for_status()
+            result_json = response.json()
+            response_text = result_json.get("response", "{}")
+            return json.loads(response_text)
+        except Exception as e:
+            logger.error(f"Error communicating with Ollama: {e}")
+            return None
