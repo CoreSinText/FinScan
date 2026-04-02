@@ -18,6 +18,8 @@ class LLMService:
         - "book_value_per_share"
         - "earnings_per_share"
         - "aset_pajak_tangguhan"
+        - "calculated_bvps"
+        "
         If a value is not found, set it to null. Do not include any other text except the JSON.
 
         Text:

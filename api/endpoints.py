@@ -18,13 +18,13 @@ async def extract_financial_ratios():
 @router.post("/emiten/scrape")
 async def scrape_emiten(db: Session = Depends(get_db)):
     """
-    Scrape data semua emiten dari website IDX dan simpan/update ke database PostgreSQL.
+    Scarape all data from idx
     """
     idx_service = IDXService()
     emiten_data = idx_service.get_all_emiten()
     
     if not emiten_data:
-        raise HTTPException(status_code=500, detail="Gagal mengambil data emiten dari IDX.")
+        raise HTTPException(status_code=500, detail="Failed to scrape emiten data from IDX.")
         
     inserted = 0
     updated = 0
@@ -49,7 +49,7 @@ async def scrape_emiten(db: Session = Depends(get_db)):
     db.commit()
     
     return {
-        "message": "Scraping selesai",
+        "message": "Scrapping done",
         "total_emiten_ditemukan": len(emiten_data),
         "inserted": inserted,
         "updated": updated
