@@ -3,6 +3,8 @@ Entry point for the FinScan FastAPI application.
 """
 from fastapi import FastAPI
 from api.endpoints import router as api_router
+from core.database import engine, Base
+from models import company, report # pastikan model di-load
 
 app = FastAPI(
     title="FinScan API",
@@ -11,6 +13,9 @@ app = FastAPI(
 )
 
 app.include_router(api_router, prefix="/api")
+
+# Buat tabel di database
+Base.metadata.create_all(bind=engine)
 
 if __name__ == "__main__":
     import uvicorn

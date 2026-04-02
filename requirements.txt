@@ -5,3 +5,5 @@ PyMuPDF
 google-generativeai
 python-dotenv
 requests
+sqlalchemy
+psycopg2-binary
