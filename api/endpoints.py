@@ -5,7 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from core.database import get_db
 from models.company import Company
+from models.requests import PBVRequest
+from models.responses import PBVResponse
 from services.idx_service import IDXService
+from core.calculator import calculate_bvps, calculate_pbv_ratio, get_pbv_status
 
 router = APIRouter()
 
@@ -54,3 +57,52 @@ async def scrape_emiten(db: Session = Depends(get_db)):
         "inserted": inserted,
         "updated": updated
     }
+
+
+@router.post("/calculate/pbv", response_model=PBVResponse)
+async def calculate_pbv(request: PBVRequest):
+    """
+    Calculate Price to Book Value (PBV) ratio.
+    
+    User only provides:
+    - ticker: Stock ticker code (e.g., 'BBCA')
+    - total_equity: Total equity from the financial report
+    
+    Stock price and listed shares are fetched automatically from IDX realtime data.
+    """
+    # Fetch realtime stock data from IDX
+    idx_service = IDXService()
+    stock_data = idx_service.get_stock_data(request.ticker)
+    
+    if not stock_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Ticker '{request.ticker}' not found in IDX trading data."
+        )
+    
+    stock_price = stock_data["stock_price"]
+    listed_shares = stock_data["listed_shares"]
+    
+    if stock_price <= 0:
+        raise HTTPException(status_code=400, detail="Stock price is 0 or unavailable.")
+    if listed_shares <= 0:
+        raise HTTPException(status_code=400, detail="Listed shares data is 0 or unavailable.")
+    
+    try:
+        bvps = calculate_bvps(request.total_equity, listed_shares)
+        pbv = calculate_pbv_ratio(stock_price, bvps)
+        status = get_pbv_status(pbv)
+        
+        return PBVResponse(
+            ticker=stock_data["ticker"],
+            name=stock_data["name"],
+            stock_price=stock_price,
+            listed_shares=listed_shares,
+            total_equity=request.total_equity,
+            bvps=round(bvps, 2),
+            pbv=round(pbv, 2),
+            status=status
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+

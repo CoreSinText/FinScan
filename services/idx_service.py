@@ -48,3 +48,43 @@ class IDXService:
         except Exception as e:
             logger.error(f"Failed to fetch emiten data from IDX: {e}")
             return []
+
+    def get_stock_data(self, ticker: str) -> dict | None:
+        """
+        Fetch realtime stock trading data for a specific ticker.
+        Returns stock_price (Close), listed_shares, and other trading info.
+        """
+        url = "https://www.idx.co.id/primary/TradingSummary/GetStockSummary"
+        params = {
+            "length": 9999,
+            "start": 0,
+        }
+
+        try:
+            response = requests.get(url, headers=self.headers, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            items = data.get("data", [])
+
+            for item in items:
+                if item.get("StockCode") == ticker.upper():
+                    return {
+                        "ticker": item["StockCode"],
+                        "name": item.get("StockName", ""),
+                        "stock_price": item.get("Close", 0),
+                        "listed_shares": item.get("ListedShares", 0),
+                        "previous": item.get("Previous", 0),
+                        "open_price": item.get("OpenPrice", 0),
+                        "high": item.get("High", 0),
+                        "low": item.get("Low", 0),
+                        "volume": item.get("Volume", 0),
+                        "date": item.get("Date", ""),
+                    }
+
+            logger.warning(f"Ticker '{ticker}' not found in IDX trading data.")
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to fetch stock data for '{ticker}': {e}")
+            return None
