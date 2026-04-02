@@ -17,6 +17,7 @@ class LLMService:
         - "stock_price"
         - "book_value_per_share"
         - "earnings_per_share"
+        - "aset_pajak_tangguhan"
         If a value is not found, set it to null. Do not include any other text except the JSON.
 
         Text:
@@ -36,6 +37,10 @@ class LLMService:
             result_json = response.json()
             response_text = result_json.get("response", "{}")
             return json.loads(response_text)
+        except requests.exceptions.HTTPError as http_err:
+            logger.error(f"HTTP error occurred: {http_err}")
+            logger.error(f"Response from Ollama: {http_err.response.text}")
+            return None
         except Exception as e:
             logger.error(f"Error communicating with Ollama: {e}")
             return None

@@ -4,3 +4,4 @@ pydantic
 PyMuPDF
 google-generativeai
 python-dotenv
+requests
