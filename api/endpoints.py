@@ -18,7 +18,7 @@ async def extract_financial_ratios():
 @router.post("/emiten/scrape")
 async def scrape_emiten(db: Session = Depends(get_db)):
     """
-    Scarape all data from idx
+    Scrape all listed company (emiten) data from IDX and save/update to the database.
     """
     idx_service = IDXService()
     emiten_data = idx_service.get_all_emiten()
@@ -33,15 +33,15 @@ async def scrape_emiten(db: Session = Depends(get_db)):
         ticker = item['ticker']
         name = item['name']
         
-        # Cek apakah emiten sudah ada
+        # Check if emiten already exists
         company = db.query(Company).filter(Company.ticker == ticker).first()
         if company:
-            # Update jika nama berubah
+            # Update if name has changed
             if company.name != name:
                 company.name = name
                 updated += 1
         else:
-            # Insert baru
+            # Insert new record
             new_company = Company(ticker=ticker, name=name)
             db.add(new_company)
             inserted += 1
@@ -49,8 +49,8 @@ async def scrape_emiten(db: Session = Depends(get_db)):
     db.commit()
     
     return {
-        "message": "Scrapping done",
-        "total_emiten_ditemukan": len(emiten_data),
+        "message": "Scraping completed",
+        "total_emiten_found": len(emiten_data),
         "inserted": inserted,
         "updated": updated
     }

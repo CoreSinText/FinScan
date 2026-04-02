@@ -9,5 +9,5 @@ class Company(Base):
     ticker = Column(String, unique=True, index=True, nullable=False)
     name = Column(String, nullable=False)
     
-    # Hubungan dengan FinancialReport
+    # Relationship with FinancialReport
     reports = relationship("FinancialReport", back_populates="company")

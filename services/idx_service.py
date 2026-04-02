@@ -15,8 +15,8 @@ class IDXService:
 
     def get_all_emiten(self) -> list[dict]:
         """
-        Mengambil semua data emiten (perusahaan tercatat) dari API IDX.
-        Mengembalikan list of dictionaries containing ticker dan name.
+        Fetch all listed company (emiten) data from the IDX API.
+        Returns a list of dictionaries containing ticker and name.
         """
         url = f"{self.base_url}/GetCompanyProfiles"
         params = {
@@ -42,9 +42,9 @@ class IDXService:
                         "name": name
                     })
 
-            logger.info(f"Berhasil mengambil {len(emiten_list)} emiten dari IDX.")
+            logger.info(f"Successfully fetched {len(emiten_list)} emiten from IDX.")
             return emiten_list
 
         except Exception as e:
-            logger.error(f"Gagal mengambil data emiten dari IDX: {e}")
+            logger.error(f"Failed to fetch emiten data from IDX: {e}")
             return []

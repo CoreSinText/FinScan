@@ -4,7 +4,7 @@ Entry point for the FinScan FastAPI application.
 from fastapi import FastAPI
 from api.endpoints import router as api_router
 from core.database import engine, Base
-from models import company, report # pastikan model di-load
+from models import company, report  # ensure models are loaded
 
 app = FastAPI(
     title="FinScan API",
@@ -14,7 +14,7 @@ app = FastAPI(
 
 app.include_router(api_router, prefix="/api")
 
-# Buat tabel di database
+# Create tables in the database
 Base.metadata.create_all(bind=engine)
 
 if __name__ == "__main__":
