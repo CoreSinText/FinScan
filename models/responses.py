@@ -15,6 +15,7 @@ class PBVResponse(BaseModel):
     bvps: float   # Book Value Per Share
     pbv: float    # Price to Book Value ratio
     status: str   # e.g., "undervalued", "overvalued", "fair"
+    report_source: Optional[str] = None  # e.g., "rdf / 2024 / audit"
 
 
 class FinancialRatiosResponse(BaseModel):
