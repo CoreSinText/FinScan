@@ -8,6 +8,7 @@ from models.responses import PBVResponse
 from services.idx_service import IDXService
 from services.llm_service import LLMService
 from services.pdf_service import PDFService
+from services.stock_price_service import StockPriceService
 from core.calculator import calculate_bvps, calculate_pbv_ratio, get_pbv_status
 import logging
 import os
@@ -27,7 +28,7 @@ async def extract_financial_ratios():
 
 
 @router.post("/emiten/scrape")
-async def scrape_emiten(db: Session = Depends(get_db)):
+def scrape_emiten(db: Session = Depends(get_db)):
     """
     Scrape all listed company (emiten) data from IDX and save/update to the database.
     """
@@ -68,42 +69,54 @@ async def scrape_emiten(db: Session = Depends(get_db)):
 
 
 @router.get("/calculate/pbv/{ticker}", response_model=PBVResponse)
-async def calculate_pbv_auto(ticker: str, db: Session = Depends(get_db)):
+def calculate_pbv_auto(ticker: str, db: Session = Depends(get_db)):
     """
     Fully automated PBV calculation.
 
     User only provides the stock ticker (e.g., 'BBCA').
     Everything else is fetched automatically:
-    - Stock price & listed shares → from IDX realtime trading data
+    - Stock price → from Yahoo Finance (realtime)
+    - Listed shares → from Yahoo Finance or IDX as fallback
     - Total equity → extracted from the latest financial report PDF via LLM
     """
     ticker = ticker.upper()
 
-    # Step 1: Fetch realtime stock data from IDX
-    idx_service = IDXService()
-    stock_data = idx_service.get_stock_data(ticker)
+    # Step 1: Fetch current stock price from Yahoo Finance
+    stock_price_service = StockPriceService()
+    yahoo_data = stock_price_service.get_current_price(ticker)
 
-    if not stock_data:
+    if not yahoo_data:
         raise HTTPException(
             status_code=404,
-            detail=f"Ticker '{ticker}' not found in IDX trading data."
+            detail=f"Ticker '{ticker}' not found on Yahoo Finance. Make sure it's a valid IDX ticker."
         )
 
-    stock_price = stock_data["stock_price"]
-    listed_shares = stock_data["listed_shares"]
+    stock_price = yahoo_data["stock_price"]
+    company_name = yahoo_data["name"]
 
     if stock_price <= 0:
         raise HTTPException(status_code=400, detail="Stock price is 0 or unavailable.")
+
+    # Get listed shares: prefer Yahoo Finance, fallback to IDX
+    listed_shares = yahoo_data.get("shares_outstanding") or 0
+
     if listed_shares <= 0:
-        raise HTTPException(status_code=400, detail="Listed shares data is 0 or unavailable.")
+        # Fallback: try IDX trading summary for listed shares
+        idx_service = IDXService()
+        idx_data = idx_service.get_stock_data(ticker)
+        if idx_data:
+            listed_shares = idx_data.get("listed_shares", 0)
+
+    if listed_shares <= 0:
+        raise HTTPException(status_code=400, detail="Listed shares data is 0 or unavailable from both Yahoo Finance and IDX.")
 
     # Step 2: Find the company and its latest financial report in DB
     company = db.query(Company).filter(Company.ticker == ticker).first()
     if not company:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Company '{ticker}' not found in database. Run /emiten/scrape and /reports/scrape first."
-        )
+        # Auto-create company record
+        company = Company(ticker=ticker, name=company_name)
+        db.add(company)
+        db.flush()
 
     # Get the latest financial report (prefer 'rdf' = Laporan Keuangan, latest year, audit period)
     latest_report = (
@@ -118,14 +131,62 @@ async def calculate_pbv_auto(ticker: str, db: Session = Depends(get_db)):
     )
 
     if not latest_report:
+        # Auto-scrape: fetch report metadata from IDX for this specific ticker
+        idx_service = IDXService()
+        ticker_reports = idx_service.get_financial_reports_for_ticker(ticker)
+
+        if not ticker_reports:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No financial report found for '{ticker}' on IDX."
+            )
+
+        # Save them to DB and pick the best PDF
+        for report in ticker_reports:
+            file_id = report.get("file_id", "")
+            if not file_id:
+                continue
+            existing = db.query(FinancialReport).filter(FinancialReport.file_id == file_id).first()
+            if existing:
+                continue
+            new_report = FinancialReport(
+                company_id=company.id,
+                year=report["year"],
+                period=report["period"],
+                report_type=report["report_type"],
+                file_id=file_id,
+                file_name=report["file_name"],
+                file_path=report["file_path"],
+                file_type=report.get("file_type", ""),
+                file_size=report.get("file_size", 0),
+                is_downloaded=False,
+            )
+            db.add(new_report)
+
+        db.commit()
+
+        # Now query again for the best PDF report
+        latest_report = (
+            db.query(FinancialReport)
+            .filter(
+                FinancialReport.company_id == company.id,
+                FinancialReport.report_type == "rdf",
+                FinancialReport.file_name.like("%.pdf"),
+            )
+            .order_by(FinancialReport.year.desc(), FinancialReport.period.desc())
+            .first()
+        )
+
+    if not latest_report:
         raise HTTPException(
             status_code=404,
-            detail=f"No financial report (PDF) found for '{ticker}'. Run /reports/scrape first."
+            detail=f"No PDF financial report found for '{ticker}' after scraping IDX."
         )
 
     # Step 3: Download the PDF if not already downloaded
     if not latest_report.is_downloaded:
-        downloaded_path = idx_service.download_file(latest_report.file_path, PDF_DOWNLOAD_DIR)
+        idx_dl_service = IDXService()
+        downloaded_path = idx_dl_service.download_file(latest_report.file_path, PDF_DOWNLOAD_DIR)
         if not downloaded_path:
             raise HTTPException(
                 status_code=500,
@@ -177,8 +238,8 @@ async def calculate_pbv_auto(ticker: str, db: Session = Depends(get_db)):
         status = get_pbv_status(pbv)
 
         return PBVResponse(
-            ticker=stock_data["ticker"],
-            name=stock_data["name"],
+            ticker=ticker,
+            name=company_name,
             stock_price=stock_price,
             listed_shares=listed_shares,
             total_equity=total_equity,
@@ -192,7 +253,7 @@ async def calculate_pbv_auto(ticker: str, db: Session = Depends(get_db)):
 
 
 @router.post("/calculate/pbv", response_model=PBVResponse)
-async def calculate_pbv_manual(request: PBVRequest):
+def calculate_pbv_manual(request: PBVRequest):
     """
     Manual PBV calculation (fallback).
 
@@ -200,22 +261,35 @@ async def calculate_pbv_manual(request: PBVRequest):
     - ticker: Stock ticker code (e.g., 'BBCA')
     - total_equity: Total equity from the financial report
 
-    Stock price and listed shares are fetched automatically from IDX realtime data.
+    Stock price and listed shares are fetched automatically from Yahoo Finance.
     """
-    idx_service = IDXService()
-    stock_data = idx_service.get_stock_data(request.ticker)
+    ticker = request.ticker.upper()
 
-    if not stock_data:
+    # Fetch current stock price from Yahoo Finance
+    stock_price_service = StockPriceService()
+    yahoo_data = stock_price_service.get_current_price(ticker)
+
+    if not yahoo_data:
         raise HTTPException(
             status_code=404,
-            detail=f"Ticker '{request.ticker}' not found in IDX trading data."
+            detail=f"Ticker '{ticker}' not found on Yahoo Finance."
         )
 
-    stock_price = stock_data["stock_price"]
-    listed_shares = stock_data["listed_shares"]
+    stock_price = yahoo_data["stock_price"]
+    company_name = yahoo_data["name"]
 
     if stock_price <= 0:
         raise HTTPException(status_code=400, detail="Stock price is 0 or unavailable.")
+
+    # Get listed shares: prefer Yahoo Finance, fallback to IDX
+    listed_shares = yahoo_data.get("shares_outstanding") or 0
+
+    if listed_shares <= 0:
+        idx_service = IDXService()
+        idx_data = idx_service.get_stock_data(ticker)
+        if idx_data:
+            listed_shares = idx_data.get("listed_shares", 0)
+
     if listed_shares <= 0:
         raise HTTPException(status_code=400, detail="Listed shares data is 0 or unavailable.")
 
@@ -225,8 +299,8 @@ async def calculate_pbv_manual(request: PBVRequest):
         status = get_pbv_status(pbv)
 
         return PBVResponse(
-            ticker=stock_data["ticker"],
-            name=stock_data["name"],
+            ticker=ticker,
+            name=company_name,
             stock_price=stock_price,
             listed_shares=listed_shares,
             total_equity=request.total_equity,
@@ -239,7 +313,7 @@ async def calculate_pbv_manual(request: PBVRequest):
 
 
 @router.post("/reports/scrape")
-async def scrape_financial_reports(db: Session = Depends(get_db)):
+def scrape_financial_reports(db: Session = Depends(get_db)):
     """
     Scrape ALL financial report metadata from IDX across years 2022-2026,
     all periods (tw1, tw2, tw3, audit), and report types (rdf, rda).
@@ -248,10 +322,6 @@ async def scrape_financial_reports(db: Session = Depends(get_db)):
     Uses `file_id` (UUID from IDX) to prevent duplicate entries.
     Does NOT download the actual files — only indexes them.
     """
-    print("sadasd")
-    return{
-        "message": "Financial report scraping completed",
-    }
     idx_service = IDXService()
     all_reports = idx_service.get_all_financial_reports()
     
