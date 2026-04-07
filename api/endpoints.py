@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
-from core.database import get_db
+from core.database import get_db, SessionLocal
 from models.company import Company
 from models.report import FinancialReport
 from models.requests import PBVRequest
@@ -25,6 +25,82 @@ PDF_DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dat
 async def extract_financial_ratios():
     # TODO: Implement endpoint logic coordinating pdf parsing, LLM extraction, and calculation
     pass
+
+
+def bg_scrape_and_download_reports():
+    """Background task to fetch metadata and download pending PDF reports."""
+    db = SessionLocal()
+    try:
+        idx_service = IDXService()
+        print("Starting background metadata scraping for all reports...")
+        
+        # Step 1: Scrape ALL metadata
+        # (This takes a few minutes because it hits Playwright many times)
+        all_reports = idx_service.get_all_financial_reports()
+        
+        if not all_reports:
+            print("ERROR: Failed to fetch any financial reports from IDX.")
+            return
+
+        inserted = 0
+        skipped = 0
+
+        for report in all_reports:
+            file_id = report.get("file_id", "")
+            if not file_id:
+                skipped += 1
+                continue
+
+            # Deduplication: check if this file_id already exists
+            existing = db.query(FinancialReport).filter(FinancialReport.file_id == file_id).first()
+            if existing:
+                skipped += 1
+                continue
+
+            # Find the company in DB
+            company = db.query(Company).filter(Company.ticker == report["ticker"]).first()
+            if not company:
+                company = Company(ticker=report["ticker"], name=report.get("name", ""))
+                db.add(company)
+                db.flush()  # Get the ID
+
+            new_report = FinancialReport(
+                company_id=company.id,
+                year=report["year"],
+                period=report["period"],
+                report_type=report["report_type"],
+                file_id=file_id,
+                file_name=report["file_name"],
+                file_path=report["file_path"],
+                file_type=report.get("file_type", ""),
+                file_size=report.get("file_size", 0),
+                is_downloaded=False,
+            )
+            db.add(new_report)
+            inserted += 1
+
+        db.commit()
+        print(f"Metadata scraping finished. Inserted {inserted}, Skipped {skipped}.")
+
+        # Step 2: Find all pending PDF reports and download them
+        reports_to_download = db.query(FinancialReport).filter(
+            FinancialReport.is_downloaded == False,
+            FinancialReport.file_path.like("%.pdf")
+        ).all()
+        
+        print(f"Found {len(reports_to_download)} reports to download in background.")
+        for report in reports_to_download:
+            print(f"Downloading report {report.file_name} for company ID {report.company_id}")
+            downloaded_path = idx_service.download_file(report.file_path, PDF_DOWNLOAD_DIR)
+            if downloaded_path:
+                report.is_downloaded = True
+                db.commit()
+                
+        print("Background scrape and download fully complete.")
+    except Exception as e:
+        print(f"ERROR: Error in background scrape/download task: {e}")
+    finally:
+        db.close()
 
 
 @router.post("/emiten/scrape")
@@ -313,65 +389,16 @@ def calculate_pbv_manual(request: PBVRequest):
 
 
 @router.post("/reports/scrape")
-def scrape_financial_reports(db: Session = Depends(get_db)):
+def scrape_financial_reports(background_tasks: BackgroundTasks):
     """
-    Scrape ALL financial report metadata from IDX across years 2022-2026,
-    all periods (tw1, tw2, tw3, audit), and report types (rdf, rda).
-
-    Stores file metadata in the `financial_report` table.
-    Uses `file_id` (UUID from IDX) to prevent duplicate entries.
-    Does NOT download the actual files — only indexes them.
-    """
-    idx_service = IDXService()
-    all_reports = idx_service.get_all_financial_reports()
+    Scrapes ALL financial report metadata from IDX and downloads all pending PDF files.
     
-
-    if not all_reports:
-        raise HTTPException(status_code=500, detail="Failed to fetch financial reports from IDX.")
-
-    inserted = 0
-    skipped = 0
-
-    for report in all_reports:
-        file_id = report.get("file_id", "")
-        if not file_id:
-            skipped += 1
-            continue
-
-        # Deduplication: check if this file_id already exists in the DB
-        existing = db.query(FinancialReport).filter(FinancialReport.file_id == file_id).first()
-        if existing:
-            skipped += 1
-            continue
-
-        # Find the company in DB
-        company = db.query(Company).filter(Company.ticker == report["ticker"]).first()
-        if not company:
-            # Auto-create company if not scraped yet
-            company = Company(ticker=report["ticker"], name=report.get("name", ""))
-            db.add(company)
-            db.flush()  # Get the ID
-
-        new_report = FinancialReport(
-            company_id=company.id,
-            year=report["year"],
-            period=report["period"],
-            report_type=report["report_type"],
-            file_id=file_id,
-            file_name=report["file_name"],
-            file_path=report["file_path"],
-            file_type=report.get("file_type", ""),
-            file_size=report.get("file_size", 0),
-            is_downloaded=False,
-        )
-        db.add(new_report)
-        inserted += 1
-
-    db.commit()
+    Because this process parses over 40+ dynamic IDX pages and downloads potentially
+    thousands of PDFs, it runs entirely in the background. The endpoint returns immediately.
+    """
+    # Trigger background scrape and download task
+    background_tasks.add_task(bg_scrape_and_download_reports)
 
     return {
-        "message": "Financial report scraping completed",
-        "total_reports_found": len(all_reports),
-        "inserted": inserted,
-        "skipped_duplicates": skipped,
+        "message": "Financial report scraping and downloading has been started in the background. Check your server logs for progress."
     }
