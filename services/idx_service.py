@@ -178,8 +178,13 @@ class IDXService:
 
     def download_file(self, file_path: str, save_dir: str) -> str | None:
         """
-        Download a single file from IDX using Playwright natively.
+        Download a single file from IDX. Uses Playwright to grab CloudFlare
+        cookies seamlessly, and then streams the actual PDF using urllib.
+        This avoids the Playwright 'download is starting' errors.
         """
+        import urllib.request
+        from urllib.parse import quote
+        
         download_url = f"https://www.idx.co.id{quote(file_path, safe='/:@')}"
         file_name = os.path.basename(file_path)
         local_path = os.path.join(save_dir, file_name)
@@ -189,18 +194,33 @@ class IDXService:
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                page = browser.new_page(user_agent=self.user_agent)
+                context = browser.new_context(user_agent=self.user_agent)
+                page = context.new_page()
                 
-                # We expect a PDF download
-                with page.expect_download() as download_info:
-                    page.goto(download_url, wait_until='domcontentloaded')
-                
-                download = download_info.value
-                download.save_as(local_path)
+                # Navigate to the base URL to bypass cloudflare and get cookies
+                try:
+                    page.goto("https://www.idx.co.id", wait_until='domcontentloaded', timeout=15000)
+                    page.wait_for_timeout(3000)
+                except Exception:
+                    pass
+                    
+                cookies = context.cookies()
                 browser.close()
+                
+            # Construct cookie header
+            cookie_header = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+            
+            req = urllib.request.Request(download_url, headers={
+                "User-Agent": self.user_agent,
+                "Cookie": cookie_header,
+                "Referer": "https://www.idx.co.id/"
+            })
+            
+            with urllib.request.urlopen(req, timeout=30) as response, open(local_path, 'wb') as out_file:
+                out_file.write(response.read())
                 
             logger.info(f"Downloaded: {file_name}")
             return local_path
         except Exception as e:
-            logger.error(f"Failed to download file from '{file_path}' via Playwright: {e}")
+            logger.error(f"Failed to download file from '{file_path}': {e}")
             return None

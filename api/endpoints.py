@@ -79,6 +79,11 @@ def bg_scrape_and_download_reports():
             db.add(new_report)
             inserted += 1
 
+            # Prevent SQLite "too many SQL variables" by committing in chunks
+            if inserted % 50 == 0:
+                db.commit()
+
+        # Final commit for any remainder
         db.commit()
         print(f"Metadata scraping finished. Inserted {inserted}, Skipped {skipped}.")
 
